@@ -14,10 +14,12 @@ local CHARACTER_START = 0x3bfd0
 local NUM_CHARACTER_SLOTS = 7
 local CHARACTER_SIZE = 0x7C
 
--- 'fc_' is short for 'Falling Character'
--- I may change/remove the prefix in the future,
--- once I switch to a generalized falling character format
--- (I may also make it more like OOP)
+--[[ 
+    'fc_' is short for 'Falling Character'
+    I may change/remove the prefix in the future,
+    once I switch to a generalized falling character format
+    (I may also make it more like OOP)
+--]]
 
 -- This seems off... maybe read_u16_be (?)
 function fc_x(base_address)
@@ -84,6 +86,41 @@ function fc_is_active(base_address)
     return bit.band(memory.readbyte(base_address + 0x64), 2) ~= 0
 end
 
+
+--[[
+    Fire score-dependent variables.
+--]]
+
+function fire_speed()
+    return memory.readbyte(0x3CAC3)
+end
+
+function fire_characters_max()
+    return memory.readbyte(0x3CAC4)
+end
+
+function fire_characters_in_play()
+    return memory.readbyte(0x3CAC5)
+end
+
+function fire_yoshi_chance()
+    return memory.readbyte(0x3CAC6)
+end
+
+function fire_baby_dk_chance()
+    return memory.readbyte(0x3CAC7)
+end
+
+function fire_egg_chance()
+    return memory.readbyte(0x3CAC8)
+end
+
+--[[
+function fire_unknown()
+    return memory.readbyte(0x3CAC9)
+end
+--]]
+
 local next = next
 local prediction = {}
 
@@ -100,34 +137,39 @@ while continue_loop do
         -- use a set list of active characters and update that separately
         
         -- The address where the character of interest begins.
-        local c = CHARACTER_START + slot_num * CHARACTER_SIZE
+        local curr_character = CHARACTER_START + slot_num * CHARACTER_SIZE
+        local curr_prediction = prediction[slot_num]
         
-        if fc_is_active(c) then
+        if fc_is_active(curr_character) then
             -- TODO: Draw the actual hitbox, probably name it "fc_draw_hitbox" or similar
-            local x = fc_x_pixel(c)
-            local y = fc_y_pixel(c)
-            local c_type = fc_type(c)
+            local x = fc_x_pixel(curr_character)
+            local y = fc_y_pixel(curr_character)
+            local c_type = fc_type(curr_character)
             gui.drawEllipse(x - 6, y - 6, 12, 12, 0xFFFFFFFF, fc_type_colors[c_type])
             gui.drawText(x - 5, y - 7, slot_num, (c_type == 5 and 0xFFFFFFFF) or 0xFF000000, 0)
             
             -- Check if movement prediction is correct
-            if prediction[slot_num] ~= nil and next(prediction[slot_num]) ~= nil then
-                -- A stricter check would compare the velocities, which almost certainly fail currently.
-                -- (That's partially because I haven't implemented bounce-collisions, which affect velocity).
-                if fc_x(c) ~= prediction[slot_num].x or fc_y(c) ~= prediction[slot_num].y or not continue_loop then
+            if curr_prediction ~= nil and next(curr_prediction) ~= nil then
+                -- The checks here will keep becoming more abstract.
+                if fc_x(curr_character) ~= curr_prediction.x or 
+                fc_y(curr_character) ~= curr_prediction.y or
+                fc_x_vel(curr_character) ~= curr_prediction.x_vel or
+                fc_y_vel(curr_character) ~= curr_prediction.y_vel
+                then
                     gui.drawEllipse(x - 6, y - 6, 12, 12, 0xFFFF0000)
                     print("Character " .. slot_num .. " (" .. fc_type_names[c_type] .. ")")
-                    print("x, y: " .. fc_x(c) .. ", " .. fc_y(c) .. " (" .. x .. ", " .. y .. ")")
-                    print("x_vel: " .. fc_x_vel(c) .. ", " .. fc_y_vel(c))
-                    print("x_vel_max, y_vel_max: " .. fc_x_vel_max(c) .. ", " .. fc_y_vel_max(c))
-                    for t in prediction do
-                        console.log(t .. ": " .. prediction)
+                    print("x, y: " .. fc_x(curr_character) .. ", " .. fc_y(curr_character) .. " (" .. x .. ", " .. y .. ")")
+                    print("x_vel: " .. fc_x_vel(curr_character) .. ", " .. fc_y_vel(curr_character))
+                    print("x_vel_max, y_vel_max: " .. fc_x_vel_max(curr_character) .. ", " .. fc_y_vel_max(curr_character))
+                    for k,v in pairs(prediction) do
+                        console.log("    " .. k .. ": ")
+                        console.log(v)
                     end
                     continue_loop = false
                     break
                 end
             else
-                prediction[slot_num] = {}
+                curr_prediction = {}
             end
             
             --[[
@@ -137,17 +179,25 @@ while continue_loop do
             -- TODO: check for bounce, and adjust velocities accordingly.
             
             -- Check if the character will be moving next frame:
-            local move_timer = fc_move_timer(c)
-            if move_timer >= 180 then
+            local move_timer_result = fc_move_timer(curr_character) + fire_speed()
+            if move_timer_result >= 180 then
                 -- Part 1: calculate velocity due to acceleration
                 -- Since the velocities are not directly affected
                 -- by the max velocities, there's probably
                 -- overflow/underflow protection elsewhere.
-                local x_vel = fc_x_vel(c)
-                local y_vel = fc_y_vel(c)
+                
+                local x_vel = nil
+                local y_vel = nil
+                if curr_prediction.x_vel == nil then
+                    x_vel = fc_x_vel(curr_character)
+                    y_vel = fc_y_vel(curr_character)
+                else
+                    x_vel = curr_prediction.x_vel
+                    y_vel = curr_prediction.y_vel
+                end
                 if bit.band(memory.readbyte(0x35), 8) ~= 0 then
-                    local accel = fc_accel(c)
-                    local accel_flags = fc_accel_flags(c)
+                    local accel = fc_accel(curr_character)
+                    local accel_flags = fc_accel_flags(curr_character)
                     if x_vel ~= 0 then
                         if bit.band(accel_flags, 0x20) ~= 0 then
                             x_vel = x_vel - accel
@@ -158,7 +208,6 @@ while continue_loop do
                         if x_vel == 0 then
                             x_vel = 1
                         end
-                        -- x_vel = bit.band(x_vel, 0xFFFF)
                     end
                     if y_vel ~= 0 then
                         if bit.band(accel_flags, 0x40) ~= 0 then
@@ -172,16 +221,16 @@ while continue_loop do
                         end
                     end
                 end
-                prediction[slot_num].x_vel = x_vel
-                prediction[slot_num].y_vel = y_vel
+                curr_prediction.x_vel = x_vel
+                curr_prediction.y_vel = y_vel
                 
                 -- Part 2: calculate position due to velocity
                 -- This first processes the velocities and uses
                 -- the max velocities if they are less in magnitude
-                local x_vel_max = fc_x_vel_max(c)
-                local y_vel_max = fc_y_vel_max(c)
-                prediction[slot_num].x_vel_max = x_vel_max
-                prediction[slot_num].y_vel_max = y_vel_max
+                local x_vel_max = fc_x_vel_max(curr_character)
+                local y_vel_max = fc_y_vel_max(curr_character)
+                curr_prediction.x_vel_max = x_vel_max
+                curr_prediction.y_vel_max = y_vel_max
                 if x_vel_max ~= 0 then
                     if x_vel < 0 then
                         x_vel_max = x_vel_max * -1
@@ -207,9 +256,12 @@ while continue_loop do
                     end
                 end
                 
-                prediction[slot_num].x = fc_x(c) + x_vel
-                prediction[slot_num].y = fc_y(c) + y_vel
+                curr_prediction.x = fc_x(curr_character) + x_vel
+                curr_prediction.y = fc_y(curr_character) + y_vel
             end
+            
+            -- Why is this needed?
+            prediction[slot_num] = curr_prediction
         else
             prediction[slot_num] = nil
         end
